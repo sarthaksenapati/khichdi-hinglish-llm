@@ -1,0 +1,15 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+wandb/
+*.lock
+data/raw/
+data/clean/
+checkpoints/
+.venv/
+.env
+outputs/
+.DS_Store
+*.parquet
+notebooks/
+reports/week1_content.md

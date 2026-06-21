@@ -1,0 +1,7 @@
+# Day 1 experiment config. Every run in this project is driven by a YAML
+# like this one -- configs are diffable, shareable, and go in git.
+model_name: Qwen/Qwen2.5-1.5B
+seed: 42
+corpora_dir: data/corpora
+report_path: reports/tokenizer_report.md
+sanity_precision: nf4

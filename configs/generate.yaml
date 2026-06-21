@@ -1,0 +1,19 @@
+# Synthetic generation config. Drives gen_instructions.py and gen_responses.py.
+gen_model: meta-llama/llama-3.3-70b-instruct   # use ":free" to spend $0 (slower, rate-limited)
+instruction_temperature: 1.0   # high -> diverse user queries
+response_temperature: 0.7      # lower -> coherent, on-task answers
+per_batch: 25                  # instructions requested per taxonomy cell
+
+# Script mix from data_spec.md §2 (weights, must roughly sum to 1.0)
+scripts:
+  romanized: 0.70
+  english: 0.20
+  devanagari: 0.10
+
+task_types:    [qna, howto, explanation, advice, creative]   # dropped 'rewrite' (collapsed to narrow EN->HI translation)
+domains:       [cooking, finance, tech, travel, health, career, daily_life, education]
+registers:     [casual, neutral, polite]
+switch_density: [light, medium, heavy]
+
+out_instructions: data/raw/instructions.jsonl
+out_sft:          data/raw/sft_raw.jsonl
