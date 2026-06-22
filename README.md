@@ -6,7 +6,7 @@ rented GPUs for a few dollars.
 
 - **Model (SFT v2):** https://huggingface.co/sarthaksenapati/qwen1.5b-hinglish-sft-v2
 - **Dataset (10k):** https://huggingface.co/datasets/sarthaksenapati/khichdi-sft
-- **Writeup:** _coming soon_
+- **Writeup:** https://sarthak-senapati.hashnode.dev/teaching-a-base-model-to-speak-hinglish-part-1-sft
 
 ---
 
