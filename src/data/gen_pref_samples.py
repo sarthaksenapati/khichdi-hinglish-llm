@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import torch
 from datasets import load_dataset
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
@@ -27,6 +28,17 @@ CHATML = (
     "{% endfor %}"
     "{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
 )
+# CJK / Hangul / Kana / Arabic / Thai — the scripts the SFT model drifts into
+FOREIGN = re.compile(r"[一-鿿가-힯぀-ヿ؀-ۿ฀-๿]")
+
+
+def foreign_token_ids(tok):
+    """Token ids whose decoded text contains a foreign-script char -> suppress at decode."""
+    ids = []
+    for tid in range(len(tok)):
+        if FOREIGN.search(tok.decode([tid])):
+            ids.append(tid)
+    return ids
 
 
 def main():
@@ -39,6 +51,8 @@ def main():
     ap.add_argument("--top-p", type=float, default=0.9)
     ap.add_argument("--rep-penalty", type=float, default=1.1,
                     help="lower than greedy's 1.2 — high penalty + sampling leaks foreign-script tokens")
+    ap.add_argument("--no-suppress", action="store_true",
+                    help="disable foreign-script token suppression")
     ap.add_argument("--max-new-tokens", type=int, default=256)
     ap.add_argument("--push-repo", default=None)
     args = ap.parse_args()
@@ -60,6 +74,10 @@ def main():
     if args.limit:
         prompts = prompts[:args.limit]
 
+    suppress = None if args.no_suppress else foreign_token_ids(tok)
+    if suppress:
+        print(f"suppressing {len(suppress)} foreign-script tokens")
+
     os.makedirs(os.path.dirname(args.out), exist_ok=True)
     written = 0
     with open(args.out, "w", encoding="utf-8") as f:
@@ -73,6 +91,7 @@ def main():
                                      temperature=args.temperature, top_p=args.top_p,
                                      num_return_sequences=args.n,        # N samples per prompt
                                      repetition_penalty=args.rep_penalty, no_repeat_ngram_size=3,
+                                     suppress_tokens=suppress,
                                      eos_token_id=im_end, pad_token_id=tok.pad_token_id)
             gen = out[:, enc.input_ids.shape[1]:]                         # (batch*N, gen_len)
             decoded = [tok.decode(g, skip_special_tokens=True).strip() for g in gen]
