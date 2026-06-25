@@ -35,8 +35,10 @@ def main():
     ap.add_argument("--n", type=int, default=4, help="samples per prompt")
     ap.add_argument("--batch", type=int, default=16, help="prompts per forward pass")
     ap.add_argument("--limit", type=int, default=None)
-    ap.add_argument("--temperature", type=float, default=0.8)
-    ap.add_argument("--top-p", type=float, default=0.95)
+    ap.add_argument("--temperature", type=float, default=0.7)
+    ap.add_argument("--top-p", type=float, default=0.9)
+    ap.add_argument("--rep-penalty", type=float, default=1.1,
+                    help="lower than greedy's 1.2 — high penalty + sampling leaks foreign-script tokens")
     ap.add_argument("--max-new-tokens", type=int, default=256)
     ap.add_argument("--push-repo", default=None)
     args = ap.parse_args()
@@ -70,7 +72,7 @@ def main():
                 out = model.generate(**enc, max_new_tokens=args.max_new_tokens, do_sample=True,
                                      temperature=args.temperature, top_p=args.top_p,
                                      num_return_sequences=args.n,        # N samples per prompt
-                                     repetition_penalty=1.2, no_repeat_ngram_size=3,
+                                     repetition_penalty=args.rep_penalty, no_repeat_ngram_size=3,
                                      eos_token_id=im_end, pad_token_id=tok.pad_token_id)
             gen = out[:, enc.input_ids.shape[1]:]                         # (batch*N, gen_len)
             decoded = [tok.decode(g, skip_special_tokens=True).strip() for g in gen]
