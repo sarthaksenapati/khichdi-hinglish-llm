@@ -28,8 +28,8 @@ CHATML = (
     "{% endfor %}"
     "{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
 )
-# CJK / Hangul / Kana / Arabic / Thai — the scripts the SFT model drifts into
-FOREIGN = re.compile(r"[一-鿿가-힯぀-ヿ؀-ۿ฀-๿]")
+# CJK / Hangul / Kana / Arabic / Thai + private-use & CJK-compat — scripts the SFT model drifts into
+FOREIGN = re.compile("[一-鿿가-힯぀-ヿ؀-ۿ฀-๿-﫿]")
 
 
 def foreign_token_ids(tok):
