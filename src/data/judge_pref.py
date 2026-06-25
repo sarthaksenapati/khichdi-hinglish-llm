@@ -25,6 +25,17 @@ from src.utils import get_logger
 logger = get_logger("judge_pref")
 JUDGE = "deepseek/deepseek-chat"   # independent of generator (Llama) and policy (Qwen)
 
+SPECIAL = re.compile(r"<\|[^|>]*\|>")                       # leaked special tokens e.g. <|fim_middle|>
+# allowlist: ASCII + Devanagari + common punctuation/whitespace; drop everything else
+DISALLOWED = re.compile("[^\\x09\\x0a\\x0d\\x20-\\x7eऀ-ॿ‐-—‘-”…]")
+
+
+def sanitize(text):
+    """Final clean-up: strip leaked special tokens and any non-Hinglish glyphs."""
+    text = SPECIAL.sub("", text)
+    text = DISALLOWED.sub("", text)
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
+
 
 def judge_prompt(user_msg, cands):
     block = "\n\n".join(f"[{i + 1}]\n{c}" for i, c in enumerate(cands))
@@ -55,7 +66,8 @@ def parse_best_worst(text, n):
 
 
 def judge_row(row):
-    samples = [s for s in row.get("samples", []) if s and s.strip()]
+    samples = [sanitize(s) for s in row.get("samples", []) if s and s.strip()]
+    samples = [s for s in samples if s]
     if len(samples) < 2:
         return None
     order = list(range(len(samples)))
