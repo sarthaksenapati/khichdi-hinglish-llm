@@ -45,3 +45,46 @@ def dpo_loss(policy_chosen_logps, policy_rejected_logps,
     chosen_reward = beta * (policy_chosen_logps - ref_chosen_logps).detach()
     rejected_reward = beta * (policy_rejected_logps - ref_rejected_logps).detach()
     return loss, chosen_reward, rejected_reward
+
+
+def ipo_loss(policy_chosen_logps, policy_rejected_logps,
+             ref_chosen_logps, ref_rejected_logps, beta: float = 0.1):
+    """IPO loss: a squared loss with a FINITE optimum, so it can't overfit
+    deterministic preferences the way DPO's log-sigmoid can.
+
+    Same paired inputs as dpo_loss. The margin is regressed toward 1/(2*beta)
+    instead of pushed to infinity.
+    """
+    pi_logratios = policy_chosen_logps - policy_rejected_logps
+    ref_logratios = ref_chosen_logps - ref_rejected_logps
+    margin = pi_logratios - ref_logratios
+    loss = (margin - 1.0 / (2.0 * beta)) ** 2
+
+    chosen_reward = beta * (policy_chosen_logps - ref_chosen_logps).detach()
+    rejected_reward = beta * (policy_rejected_logps - ref_rejected_logps).detach()
+    return loss, chosen_reward, rejected_reward
+
+
+def kto_loss(policy_des_logps, ref_des_logps, policy_undes_logps, ref_undes_logps,
+             beta: float = 0.1, kl=None, lambda_des: float = 1.0, lambda_undes: float = 1.0):
+    """KTO loss: learns from UNPAIRED binary labels (desirable / undesirable).
+
+    Each example contributes its own term, judged against a reference point z0
+    (a detached, non-negative KL estimate). Desirable outputs are pushed above z0,
+    undesirable below it. Returns per-group losses (lengths can differ).
+
+    policy_des_logps / ref_des_logps     : log-probs of DESIRABLE completions
+    policy_undes_logps / ref_undes_logps : log-probs of UNDESIRABLE completions
+    kl : reference point z0; if None, estimated as the detached mean log-ratio (>=0).
+    """
+    des_logratios = policy_des_logps - ref_des_logps
+    undes_logratios = policy_undes_logps - ref_undes_logps
+    if kl is None:
+        kl = torch.cat([des_logratios, undes_logratios]).mean().clamp(min=0).detach()
+
+    des_loss = lambda_des * (1 - torch.sigmoid(beta * (des_logratios - kl)))
+    undes_loss = lambda_undes * (1 - torch.sigmoid(beta * (kl - undes_logratios)))
+
+    des_reward = beta * des_logratios.detach()
+    undes_reward = beta * undes_logratios.detach()
+    return des_loss, undes_loss, des_reward, undes_reward, kl
