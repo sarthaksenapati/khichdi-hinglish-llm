@@ -1,12 +1,13 @@
 # Khichdi — a Hindi–English (Hinglish) assistant, post-trained from a base model
 
 Turning **Qwen2.5-1.5B-Base** into a code-switched **Hinglish** assistant with a full
-post-training pipeline — synthetic data → curation → SFT → (DPO next) — built end-to-end on
+post-training pipeline — synthetic data → curation → SFT → DPO — built end-to-end on
 rented GPUs for a few dollars.
 
-- **Model (SFT v2):** https://huggingface.co/sarthaksenapati/qwen1.5b-hinglish-sft-v2
-- **Dataset (10k):** https://huggingface.co/datasets/sarthaksenapati/khichdi-sft
-- **Writeup:** https://sarthak-senapati.hashnode.dev/teaching-a-base-model-to-speak-hinglish-part-1-sft
+- **SFT model:** https://huggingface.co/sarthaksenapati/qwen1.5b-hinglish-sft-v2
+- **DPO model (aligned):** https://huggingface.co/sarthaksenapati/qwen1.5b-hinglish-dpo
+- **Datasets:** [10k SFT](https://huggingface.co/datasets/sarthaksenapati/khichdi-sft) · [preference pairs](https://huggingface.co/datasets/sarthaksenapati/khichdi-pref)
+- **Writeups:** [Part 1 — SFT](https://sarthak-senapati.hashnode.dev/teaching-a-base-model-to-speak-hinglish-part-1-sft) · [Part 2 — DPO](https://sarthak-senapati.hashnode.dev/teaching-a-base-model-to-speak-hinglish-part-2-preference-optimization-with-dpo-from-scratch)
 
 ---
 
@@ -27,8 +28,18 @@ in Hinglish and follows instructions.
 
 ![Base vs SFT](assets/base_vs_sft.png)
 
-Validation `eval_loss` **1.67 → 1.19** (QLoRA, 2 epochs). Known remaining issues (clean stopping,
-verbosity, Devanagari quality) are documented below and are the target of the planned DPO stage.
+Validation `eval_loss` **1.67 → 1.19** (QLoRA, 2 epochs). Judged blind by an independent model,
+**SFT beats base 97.9%** of the time (95% CI 95.2–99.1%) on 300 held-out prompts, with **MMLU flat**
+(0.626 → 0.618) — capability preserved.
+
+## Result: SFT → DPO
+
+On-policy preference data (rank the SFT model's own samples) + a **from-scratch DPO loss** — verified
+against TRL's formula and analytic invariants (the loss starts at exactly log 2). The aligned model
+is preferred **68.2%** over SFT (95% CI 59–76%), with **no capability loss** (MMLU 0.619) and **no
+length inflation** — the win isn't from longer answers.
+
+![Pipeline results](assets/pipeline_results.png)
 
 ## A finding that shaped the project
 
@@ -49,7 +60,9 @@ Qwen2.5-1.5B-Base
       ├─ cleaning + language-ID relabeling + LLM-judge scoring (1–10)
       ├─ MinHash near-dedup  ──────────► 10k curated set (80/12/8)
       ├─ QLoRA SFT (manual chat templating + loss masking)
-      └─ DPO / IPO / KTO  (Weeks 2–3, loss implemented from scratch)
+      ├─ on-policy preference data (sample SFT, judge-rank chosen/rejected)
+      ├─ DPO (loss from scratch, verified vs TRL + analytic invariants)
+      └─ evaluation: win-rate (blind judge, Wilson CI) + MMLU slice
 ```
 
 **Engineering decisions worth a look** (details in `reports/` and the blog):
@@ -60,18 +73,25 @@ Qwen2.5-1.5B-Base
   pseudoscientific health claims; reading 100 rows by hand caught it.
 - **Manual loss masking** (plain `transformers` Trainer, not `SFTTrainer`) — verified before
   training that loss falls only on assistant tokens + the stop token.
+- **DPO loss from scratch** — ~10 lines, verified against TRL's formula (1e-6) and analytic
+  invariants (loss = log 2 at init, correct gradient signs); the live first training step hit 0.6931.
+- **Found the over-optimization boundary** — a stronger DPO run (3 epochs) improved the win-rate
+  while MMLU and answer length stayed flat, confirming the gain wasn't bought with capability or verbosity.
 
 ## Repo layout
 
 ```
 configs/        one YAML per experiment
-src/data/       data pipeline: generate, clean, score, dedup, filter
-scripts/        runnable entry points (tokenizer report, probes, ...)
-reports/        data spec, lab notes (7 days), content drafts
-data/corpora/   tokenizer-probe corpora
+src/data/       data pipeline: generate, clean, score, dedup, filter, pref sampling + judging
+src/dpo/        DPO loss + sequence log-probs (from scratch)
+src/eval/       win-rate harness (blind judge, position-swap, Wilson CI)
+scripts/        runnable entry points (tokenizer report, probes, verify_dpo_loss, ...)
+reports/        data spec, lab notes (15 days), content drafts
 assets/         figures
-train_sft.py    QLoRA SFT (runs on the pod)   # see reports/ for pod notes
-generate.py     base-vs-SFT comparison
+train_sft.py        QLoRA SFT (runs on the pod)
+train_dpo.py        DPO training with the from-scratch loss
+eval_generate*.py   held-out completions (base/SFT and SFT/DPO)
+generate.py         base-vs-SFT comparison
 ```
 
 ## Reproduce (high level)
@@ -86,23 +106,32 @@ python -m src.data.score
 python -m src.data.dedup
 python -m src.data.filter --in data/clean/sft_pool_dedup.jsonl
 # SFT (GPU): see train_sft.py
+# preference data (GPU sample + API judge)
+python -m src.data.gen_pref_samples --n 4 --push-repo <user>/khichdi-pref
+python -m src.data.judge_pref --in data/pref/pref_samples.jsonl --out data/pref/pref_pairs.jsonl
+# DPO (GPU) + verify the loss
+python scripts/verify_dpo_loss.py
+python train_dpo.py --epochs 3 --lr 1e-5 --beta 0.1
+# evaluate (DPO vs SFT)
+python -m src.eval.win_rate --in data/eval/dpo_vs_sft.jsonl --a-name sft --b-name dpo
 ```
 
 ## Status & roadmap
 
-- [x] Week 1 — data pipeline + SFT (this repo)
-- [ ] Week 2 — evaluation harness (win-rate, MMLU slice, Hinglish MT-Bench-style)
-- [ ] Week 3 — preference data + **DPO** (loss from scratch, verified vs TRL) + IPO/KTO comparison
+- [x] Week 1 — data pipeline + SFT
+- [x] Week 2 — evaluation harness (win-rate + Wilson CI, MMLU slice)
+- [x] Week 3 — preference data + **DPO** (loss from scratch, verified vs TRL)
+- [ ] Next — IPO / KTO comparison against the DPO baseline
 
 ## Limitations
 
-Not safety-aligned; low-stakes Hinglish use only. The SFT model rambles / doesn't reliably stop,
-Devanagari output is weak, and it can repeat dubious claims from its synthetic training data.
-See the model card for details.
+Not safety-aligned; low-stakes Hinglish use only. DPO reduced but did not fully fix the verbosity /
+clean-stopping issue, Devanagari output is weak, and the model can repeat dubious claims from its
+synthetic training data. See the model cards for details.
 
 ## Cost
 
-~$5 total so far (OpenRouter generation + rented RTX 4090 GPU time).
+~$8 total (OpenRouter generation + judging + rented RTX 4090 GPU time across SFT and DPO).
 
 ## License
 
