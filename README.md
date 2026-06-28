@@ -118,10 +118,13 @@ python -m src.eval.win_rate --in data/eval/dpo_vs_sft.jsonl --a-name sft --b-nam
 
 ## Status & roadmap
 
-- [x] Week 1 — data pipeline + SFT
-- [x] Week 2 — evaluation harness (win-rate + Wilson CI, MMLU slice)
-- [x] Week 3 — preference data + **DPO** (loss from scratch, verified vs TRL)
-- [ ] Next — IPO / KTO comparison against the DPO baseline
+*Day 15 of a 21-day build.*
+
+- [x] Data pipeline + SFT
+- [x] Evaluation harness — win-rate (Wilson CI) + MMLU slice
+- [x] Preference data + **DPO** — loss from scratch, verified vs TRL
+- [ ] IPO / KTO comparison against the DPO baseline
+- [ ] Final analysis, figures, and writeup
 
 ## Limitations
 
