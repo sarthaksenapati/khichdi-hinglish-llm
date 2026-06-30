@@ -456,3 +456,150 @@ Reference log probs      Reference log probs
 - **Number to remember:** DPO (v2) beats SFT 68.2% (95% CI 59.0–76.1%, clear of chance) with MMLU
   and answer-length both flat — a clean preference gain with no over-optimization. The win came from
   fixing under-training (2→3 epochs, lr 5e-6→1e-5), verified safe by the guardrails.
+
+## Day 16 — IPO and KTO: two alternatives to DPO, implemented and verified
+
+- **Did:** Implemented `ipo_loss` and `kto_loss` from scratch in `src/dpo/loss.py`, and wrote
+  `scripts/verify_ipo_kto.py` — 11 checks (init invariants, gradient directions, reference-formula
+  matches), all passed.
+
+- **Learned:**
+  - **DPO's flaw:** its log-sigmoid loss has no finite optimum, so on perfectly clean / deterministic
+    preference data it keeps pushing the margin toward infinity → overfitting and language degradation.
+  - **IPO** changes the objective: instead of pushing the margin to infinity, it regresses the margin
+    toward a fixed, finite target with a **squared loss**: `L = (margin − 1/(2β))²`. Once the margin
+    reaches `1/(2β)` the loss is 0 and the gradient stops, so the policy can't run away from the
+    reference. (For β=0.1 the target margin is 5.0.)
+  - **KTO** solves the data bottleneck: instead of costly paired data it works on unpaired binary
+    signals (desirable / undesirable), using prospect theory — value is judged against a reference
+    point and losses weigh more than gains. The implicit reward and the two losses:
+
+```
+r(x,y)        = β · log( πθ(y|x) / πref(y|x) )    # implicit reward, same as DPO
+
+# desirable output (y is good):
+L_desirable   = 1 − σ( r − z0 )    # push reward ABOVE the reference point z0
+                                   # as r − z0 → ∞,  σ → 1,  loss → 0
+
+# undesirable output (y is bad):
+L_undesirable = 1 − σ( z0 − r )    # push reward BELOW the reference point z0
+                                   # as z0 − r → ∞,  σ → 1,  loss → 0
+```
+
+- **Init-loss probes (live correctness checks at step 1):** DPO → log 2 = 0.6931; IPO → (1/(2β))² =
+  25.0 (β=0.1); KTO → 0.5 per example.
+
+- **Next:** Day 17 — reformat the pairs into KTO binary data and train IPO + KTO on the pod (one
+  script, `--loss` flag). Day 18 — three-way win-rate comparison (DPO vs IPO vs KTO) + figure.
+
+- **Number to remember:** All three losses share the same implicit reward `β·(logπθ − logπref)`;
+  they differ only in the loss *shape* — DPO log-sigmoid (unbounded), IPO squared loss to a finite
+  target 1/(2β), KTO per-example classification against a reference point z0. Verified all three
+  from scratch.
+
+## Day 17 — Training IPO and KTO: one pipeline, three losses
+
+- **Did:** One harness, three losses. Added a `--loss {dpo,ipo}` flag to `train_dpo.py` (IPO reuses
+  the whole paired pipeline — only the loss swaps), wrote `train_kto.py` (unpaired binary data,
+  per-example loss, z0 reference point) and `src/data/make_kto_data.py` (pairs -> 2,994 binary rows:
+  chosen = desirable, rejected = undesirable). Trained IPO and KTO on the pod with the SAME
+  hyperparameters as DPO v2 (3 epochs, lr 1e-5, beta 0.1), so the comparison isolates the loss.
+  Pushed both adapters (`qwen1.5b-hinglish-ipo`, `qwen1.5b-hinglish-kto`).
+
+- **Ran (probes fired exactly):** IPO step-1 loss = **25.0000** = (1/(2*beta))^2 for beta=0.1
+  (policy == reference at init); converged by epoch 2 (reward_acc 1.0, margins ~0.5). KTO step-1
+  loss = **0.5000**, z0 = 0 = 1 - sigma(0); by epoch 2 the desirable rewards went positive
+  (~1.0-1.6) and undesirable negative (~-1) -- the reward gap opened as intended. Both init-loss
+  probes hitting their analytic values is live proof both from-scratch losses are correct.
+
+- **Learned:** IPO is a one-line change to the DPO loop (same paired data, squared loss instead of
+  log-sigmoid). KTO needs its own loop: unpaired data split by label, with a reference point z0
+  computed per batch (I used the batch-mean log-ratio -- a documented simplification of canonical
+  KTO's mismatched-pair KL estimate). The same `disable_adapter()` toggle gives policy vs reference
+  from one model for all three methods. With bs=4 some KTO batches are all-one-class, so a group is
+  occasionally empty (prints `nan` for that group's reward -- harmless).
+
+- **Next:** Day 18 -- generate IPO and KTO completions on the 300 held-out prompts, run the
+  three-way win-rate (DPO vs IPO vs KTO) + MMLU, and build the comparison figure.
+
+- **Number to remember:** Both new probes fired exactly (IPO 25.0, KTO 0.5) -> losses verified live.
+  KTO opened a clear desirable/undesirable reward gap; IPO converged like DPO. The real verdict is
+  Day 18's held-out win-rates -- training metrics only confirm the wiring.
+
+## Day 18 — The three-way showdown: DPO vs IPO vs KTO
+
+- **Did:** Generalized `eval_generate_dpo.py` to take any aligned adapter (`--adapter`, `--tag`),
+  then generated IPO and KTO completions vs SFT on the same 300 held-out prompts (identical greedy
+  decoding, only the adapter toggled), ran the win-rate judge for each vs SFT, and MMLU on each
+  merged model. Built the three-way comparison figure (`assets/threeway.png`).
+
+- **Results — each method vs the SAME SFT baseline (n=300, blind position-swapped DeepSeek judge,
+  Wilson 95% CI):**
+
+  | Method | wins / ties / sft-wins | win-rate vs SFT | 95% CI | length sft→method |
+  |--------|------------------------|-----------------|--------|-------------------|
+  | KTO    | 106 / 161 / 33         | 76.3%           | 68.5–82.6 | 150 → 157 |
+  | DPO    | 75  / 190 / 35         | 68.2%           | 59.0–76.1 | 150 → 152 |
+  | IPO    | 59  / 189 / 52         | 53.2%           | 43.9–62.2 | 150 → 149 |
+
+  MMLU (0-shot slice, ±0.0137): base 0.6263 · SFT 0.6184 · DPO 0.6193 · IPO 0.6254 · KTO 0.6184.
+
+- **Learned / reading the numbers:**
+  - Anchor every method to the same reference (SFT) so all three win-rates share one scale.
+  - Overlapping CIs = no winner. KTO and DPO both clear 50% (significantly beat SFT); IPO's CI
+    straddles 50%, so it is NOT significantly better than SFT. KTO's CI does not overlap IPO's →
+    KTO significantly beats IPO. KTO vs DPO overlap → statistical tie (KTO trends higher).
+  - Headline: KTO is best / tied-best — using only cheap binary labels.
+  - No alignment tax: all five MMLU scores sit within noise of each other.
+  - Caveats to report, not hide: IPO reused DPO's beta (its squared loss targets 1/(2*beta)=5,
+    which is conservative) — it likely needs its own beta; KTO is slightly longer (157 vs 150), a
+    minor possible length confound.
+
+- **Next:** Days 19–21 — final analysis, update README + model cards + a Part 3 writeup with the
+  three-way result, and the project wrap-up.
+
+- **Number to remember:** KTO 76.3% > DPO 68.2% > IPO 53.2% (vs SFT); KTO & DPO significant, IPO
+  not; capability flat for all. The honest call is KTO ≈ DPO (CIs overlap) — don't crown a winner;
+  the real story is "KTO matches DPO with cheaper binary feedback."
+
+## Day 19 — Closing the loop: qualitative error analysis
+
+- **Did:** Wrote `src/eval/error_analysis.py` — labels each held-out completion against a fixed
+  failure taxonomy (no_clean_stop, repetition, hallucination, dubious_claim, language_issue,
+  not_following, incomplete) with the DeepSeek annotator, aggregates a per-category profile, and
+  dumps a flagged sample to read. Ran it on the two best models (KTO and DPO), then validated the
+  labels by hand on the sample. Wrote `reports/error_analysis.md`.
+
+- **Results — failure profile (n=300 each, read as relative not absolute):**
+
+  | Failure        | KTO | DPO |
+  |----------------|-----|-----|
+  | repetition     | 76% | 76% |
+  | incomplete     | 60% | 58% |
+  | language_issue | 31% | 37% |
+  | no_clean_stop  | 32% | 35% |
+  | hallucination  | 15% | 15% |
+  | not_following  |  7% | 10% |
+  | dubious_claim  |  3% |  4% |
+  | clean          |  1% |  0% |
+
+- **Learned / hand-validation findings:**
+  - The LLM annotator has the same calibration problem as the LLM judge — it over-flags (1% clean
+    isn't credible; repetition is applied liberally). Trust the ranking and shape, not the absolute
+    percentages. Validating a sample by hand is what made this clear.
+  - KTO and DPO have near-identical profiles → the residual failures come from the SFT base + the
+    preference data, NOT the choice of loss (matches the close Day-18 win-rates).
+  - Root cause = no stop control: `no_clean_stop` and `incomplete` are two symptoms of one disease
+    — the model rambles (often into a second self-directed turn) until max_new_tokens truncates it.
+    Exactly the Day-11 prediction: length-matched pairs gave no "stop cleanly" signal, so training
+    couldn't fix it. Error analysis confirmed it empirically.
+  - Eval-time decoding artifacts (`+lsi`, `spNet`, `⏤⏤⏤`) leaked because the eval used plain greedy
+    decoding without the foreign-token suppression / sanitizer from the pref pipeline — inflates
+    language_issue; fixable at inference.
+
+- **Next:** Day 20 — Part 3 writeup (DPO vs IPO vs KTO + this error analysis); Day 21 — model cards
+  for IPO/KTO + final README/repo polish and wrap-up.
+
+- **Number to remember:** Quant says preferred, not good — reading 300 outputs showed the real
+  remaining weakness is stop-control, identical across DPO and KTO. The fix is stopping-specific
+  preference data (clean-stop chosen vs rambling rejected), not more training on the current pairs.
