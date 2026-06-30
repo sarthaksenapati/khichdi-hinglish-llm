@@ -1,13 +1,13 @@
 # Khichdi — a Hindi–English (Hinglish) assistant, post-trained from a base model
 
 Turning **Qwen2.5-1.5B-Base** into a code-switched **Hinglish** assistant with a full
-post-training pipeline — synthetic data → curation → SFT → DPO — built end-to-end on
+post-training pipeline — synthetic data → curation → SFT → DPO / IPO / KTO — built end-to-end on
 rented GPUs for a few dollars.
 
 - **SFT model:** https://huggingface.co/sarthaksenapati/qwen1.5b-hinglish-sft-v2
-- **DPO model (aligned):** https://huggingface.co/sarthaksenapati/qwen1.5b-hinglish-dpo
+- **Aligned models:** [DPO](https://huggingface.co/sarthaksenapati/qwen1.5b-hinglish-dpo) · [IPO](https://huggingface.co/sarthaksenapati/qwen1.5b-hinglish-ipo) · [KTO](https://huggingface.co/sarthaksenapati/qwen1.5b-hinglish-kto)
 - **Datasets:** [10k SFT](https://huggingface.co/datasets/sarthaksenapati/khichdi-sft) · [preference pairs](https://huggingface.co/datasets/sarthaksenapati/khichdi-pref)
-- **Writeups:** [Part 1 — SFT](https://sarthak-senapati.hashnode.dev/teaching-a-base-model-to-speak-hinglish-part-1-sft) · [Part 2 — DPO](https://sarthak-senapati.hashnode.dev/teaching-a-base-model-to-speak-hinglish-part-2-preference-optimization-with-dpo-from-scratch)
+- **Writeups:** [Part 1 — SFT](https://sarthak-senapati.hashnode.dev/teaching-a-base-model-to-speak-hinglish-part-1-sft) · [Part 2 — DPO](https://sarthak-senapati.hashnode.dev/teaching-a-base-model-to-speak-hinglish-part-2-preference-optimization-with-dpo-from-scratch) · [Part 3 — DPO vs IPO vs KTO](https://sarthak-senapati.hashnode.dev/teaching-a-base-model-to-speak-hinglish-part-3-dpo-vs-ipo-vs-kto-and-reading-the-failures)
 
 ---
 
@@ -41,6 +41,26 @@ length inflation** — the win isn't from longer answers.
 
 ![Pipeline results](assets/pipeline_results.png)
 
+## Result: DPO vs IPO vs KTO
+
+The same from-scratch approach extended to two more preference losses — **IPO** and **KTO** — all
+trained on identical data and hyperparameters and judged against the same SFT baseline. **KTO, using
+only cheap binary labels, is the strongest (tied with DPO); IPO did not separate from SFT.**
+Capability stayed flat for every method.
+
+![Three-way comparison](assets/threeway.png)
+
+| vs SFT | win-rate | 95% CI |
+|--------|----------|--------|
+| KTO | 76.3% | 68.5 – 82.6 |
+| DPO | 68.2% | 59.0 – 76.1 |
+| IPO | 53.2% | 43.9 – 62.2 (not significant) |
+
+A qualitative **error analysis** — reading 300 outputs by hand, not just metrics — found DPO and KTO
+fail near-identically: the dominant remaining weakness is **stop-control**, traced back to the
+length-matched preference data (the methods can only learn what the data contains). Details in
+[`reports/error_analysis.md`](reports/error_analysis.md).
+
 ## A finding that shaped the project
 
 Tokenizer fertility on the project corpus — Devanagari costs ~2.8× more tokens per word than
@@ -61,8 +81,9 @@ Qwen2.5-1.5B-Base
       ├─ MinHash near-dedup  ──────────► 10k curated set (80/12/8)
       ├─ QLoRA SFT (manual chat templating + loss masking)
       ├─ on-policy preference data (sample SFT, judge-rank chosen/rejected)
-      ├─ DPO (loss from scratch, verified vs TRL + analytic invariants)
-      └─ evaluation: win-rate (blind judge, Wilson CI) + MMLU slice
+      ├─ DPO / IPO / KTO  (three losses from scratch, each verified)
+      ├─ evaluation: win-rate (blind judge, Wilson CI) + MMLU slice
+      └─ qualitative error analysis (failure taxonomy, hand-validated)
 ```
 
 **Engineering decisions worth a look** (details in `reports/` and the blog):
@@ -77,20 +98,26 @@ Qwen2.5-1.5B-Base
   invariants (loss = log 2 at init, correct gradient signs); the live first training step hit 0.6931.
 - **Found the over-optimization boundary** — a stronger DPO run (3 epochs) improved the win-rate
   while MMLU and answer length stayed flat, confirming the gain wasn't bought with capability or verbosity.
+- **Three preference losses from scratch** — DPO, IPO, and KTO, each verified by an analytic
+  init-loss probe (log 2 / 25.0 / 0.5) that fires live on training step 1.
+- **Honest comparison + error analysis** — reported overlapping CIs without crowning a winner, and
+  read 300 outputs by hand to characterize the real remaining failures.
 
 ## Repo layout
 
 ```
 configs/        one YAML per experiment
 src/data/       data pipeline: generate, clean, score, dedup, filter, pref sampling + judging
-src/dpo/        DPO loss + sequence log-probs (from scratch)
-src/eval/       win-rate harness (blind judge, position-swap, Wilson CI)
-scripts/        runnable entry points (tokenizer report, probes, verify_dpo_loss, ...)
-reports/        data spec, lab notes (15 days), content drafts
+src/dpo/        DPO / IPO / KTO losses + sequence log-probs (from scratch)
+src/eval/       win-rate harness + error analysis (blind judge, Wilson CI)
+scripts/        entry points (tokenizer report, probes, verify_dpo_loss, verify_ipo_kto, ...)
+reports/        data spec, lab notes (19 days), error_analysis.md, content drafts
+model_cards/    HF model cards (SFT, DPO, IPO, KTO)
 assets/         figures
-train_sft.py        QLoRA SFT (runs on the pod)
-train_dpo.py        DPO training with the from-scratch loss
-eval_generate*.py   held-out completions (base/SFT and SFT/DPO)
+train_sft.py        QLoRA SFT
+train_dpo.py        DPO / IPO training (--loss flag), from-scratch loss
+train_kto.py        KTO training (unpaired binary data)
+eval_generate*.py   held-out completions (base/SFT, and any aligned adapter)
 generate.py         base-vs-SFT comparison
 ```
 
@@ -114,27 +141,36 @@ python scripts/verify_dpo_loss.py
 python train_dpo.py --epochs 3 --lr 1e-5 --beta 0.1
 # evaluate (DPO vs SFT)
 python -m src.eval.win_rate --in data/eval/dpo_vs_sft.jsonl --a-name sft --b-name dpo
+# IPO + KTO (same data; KTO uses binary labels) + verify those losses
+python scripts/verify_ipo_kto.py
+python -m src.data.make_kto_data --in data/pref/pref_pairs.jsonl --out data/pref/kto_data.jsonl --push-repo <user>/khichdi-pref
+python train_dpo.py --loss ipo --epochs 3 --lr 1e-5
+python train_kto.py --epochs 3 --lr 1e-5
+# qualitative error analysis
+python -m src.eval.error_analysis --in data/eval/kto_vs_sft.jsonl --field b --name kto
 ```
 
 ## Status & roadmap
 
-*Day 15 of a 21-day build.*
+*Day 19 of a 21-day build.*
 
 - [x] Data pipeline + SFT
 - [x] Evaluation harness — win-rate (Wilson CI) + MMLU slice
 - [x] Preference data + **DPO** — loss from scratch, verified vs TRL
-- [ ] IPO / KTO comparison against the DPO baseline
-- [ ] Final analysis, figures, and writeup
+- [x] IPO / KTO comparison against the DPO baseline (all losses from scratch)
+- [x] Qualitative error analysis
+- [ ] Final writeup + portfolio polish
 
 ## Limitations
 
-Not safety-aligned; low-stakes Hinglish use only. DPO reduced but did not fully fix the verbosity /
-clean-stopping issue, Devanagari output is weak, and the model can repeat dubious claims from its
-synthetic training data. See the model cards for details.
+Not safety-aligned; low-stakes Hinglish use only. The dominant remaining failure — across *all*
+alignment methods — is stop-control: the model rambles / doesn't reliably stop. Devanagari output is
+weak, and it can repeat dubious claims from its synthetic training data. Quantified in
+[`reports/error_analysis.md`](reports/error_analysis.md); see the model cards for details.
 
 ## Cost
 
-~$8 total (OpenRouter generation + judging + rented RTX 4090 GPU time across SFT and DPO).
+~$9 total (OpenRouter generation + judging + rented RTX 4090 GPU time across SFT, DPO, IPO, KTO).
 
 ## License
 
